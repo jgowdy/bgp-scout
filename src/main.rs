@@ -2,17 +2,24 @@ use clap::Parser;
 use ipnet::{IpAdd, Ipv4Net};
 use bgpkit_parser::BgpkitParser;
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::{self, BufReader, Seek, SeekFrom, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::str::FromStr;
 use std::error::Error;
+use std::time::Duration;
+use reqwest::header::{HeaderMap, HeaderValue, IF_NONE_MATCH, ETAG};
+use reqwest::{blocking::Client, StatusCode};
+use flate2::read::GzDecoder;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Opts {
-    /// File path to a MRT file, local or remote.
-    #[clap(name = "FILE")]
-    file_path: String,
+    #[arg(required = true, index = 1)]
+    origin_asns: Vec<u32>,
+
+    /// MRT file URL or local path
+    #[clap(short = 'f', long = "mrt-file")]
+    mrt_file: Option<String>,
 
     /// Output as JSON objects
     #[clap(long)]
@@ -28,10 +35,6 @@ struct Opts {
 
 #[derive(Parser, Debug)]
 struct Filters {
-    /// Filter by origin AS Numbers (comma-separated list)
-    #[clap(short = 'o', long, value_delimiter = ',')]
-    origin_asns: Option<Vec<u32>>,
-
     /// Discover associated ASNs
     #[clap(long)]
     discover_asns: bool,
@@ -48,19 +51,27 @@ struct Filters {
 fn main() -> Result<(), Box<dyn Error>> {
     let opts: Opts = Opts::parse();
 
-    let mut origin_asns: HashSet<u32> = match &opts.filters.origin_asns {
-        Some(asns) => asns.iter().cloned().collect(),
-        None => HashSet::new(),
+    // Check if the MRT file is provided or needs to be downloaded
+    let mrt_file_path = match opts.mrt_file {
+        Some(file) => file,
+        None => {
+            let url = "https://data.ris.ripe.net/rrc00/latest-bview.gz";
+            let output_file_gzip = "latest-bview.gz";
+            let output_file_mrt = "latest-bview.mrt";
+            println!("Using {}", url);
+            download_cached(url, output_file_gzip, Duration::from_secs(86400))?;
+            println!("Decompressing gzipped file {}", output_file_gzip);
+            decompress_gzip(output_file_gzip, output_file_mrt)?;
+            println!("MRT file {}", output_file_mrt);
+            output_file_mrt.to_string()
+        }
     };
 
-    let mut input_file = File::open(&opts.file_path)?;
+    let mut origin_asns= opts.origin_asns.iter().cloned().collect();
+
+    let mut input_file = File::open(&mrt_file_path)?;
 
     if opts.filters.discover_asns {
-        if origin_asns.is_empty() {
-            eprintln!("Error: --origin-asns must be specified when using --discover-asns");
-            std::process::exit(1);
-        }
-
         let discovered_asns = discover_associated_asns(&mut input_file, &origin_asns)?;
         println!("Discovered ASNs: {:?}", discovered_asns);
         origin_asns.extend(discovered_asns);
@@ -69,10 +80,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         input_file.seek(SeekFrom::Start(0))?;
     }
 
-    
     let mut prefixes = scan_prefixes(&mut input_file, &origin_asns, opts.filters.ipv4_only, opts.filters.ipv6_only)?;
     
-    // Apply exclude subnets if specified
+    // Exclude subnets if specified
     if let Some(exclude_subnets) = opts.exclude_subnets {
         for exclude_net_str in exclude_subnets {
             let exclude_net = Ipv4Net::from_str(&exclude_net_str)?;
@@ -88,6 +98,27 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     
+    Ok(())
+}
+
+fn decompress_gzip(input_file: &str, output_file: &str) -> io::Result<()> {
+    // Open the gzip-compressed file
+    let file_in = File::open(input_file)?;
+    let buf_reader = BufReader::new(file_in);
+
+    // Create a GzDecoder to handle the gzip decompression
+    let mut decoder = GzDecoder::new(buf_reader);
+
+    // Open the output file
+    let file_out = File::create(output_file)?;
+    let mut buf_writer = BufWriter::new(file_out);
+
+    // Copy all decompressed bytes from the decoder to the output file
+    io::copy(&mut decoder, &mut buf_writer)?;
+
+    // Ensure all data is flushed to the output file
+    buf_writer.flush()?;
+
     Ok(())
 }
 
@@ -225,4 +256,62 @@ fn exclude_subnet(net: Ipv4Net, excluded_net: Ipv4Net) -> Vec<Ipv4Net> {
     }
 
     result
+}
+
+fn download_cached(url: &str, output_file: &str, cache_duration: Duration) -> Result<(), Box<dyn Error>> {
+    let etag_file = format!("{}.etag", output_file);
+    let mut headers = HeaderMap::new();
+
+    // Delete etag file if output file doesn't exist
+    if !fs::metadata(output_file).is_ok() {
+        let _ = fs::remove_file(&etag_file);
+    }
+
+    if let Ok(metadata) = fs::metadata(&etag_file) {
+        if let Ok(modified) = metadata.modified() {
+            if modified.elapsed()?.as_secs() < cache_duration.as_secs() {
+                if let Ok(etag) = fs::read_to_string(&etag_file) {
+                    headers.insert(IF_NONE_MATCH, HeaderValue::from_str(&etag)?);
+                }
+            }
+        }
+    }
+
+    let client = Client::new();
+    let mut response = client.get(url).headers(headers).send().map_err(|e| {
+        format!("Failed to send request: {}", e)
+    })?;
+
+    match response.status() {
+        StatusCode::NOT_MODIFIED => {
+            // Touch the ETag file to update its modified date
+            OpenOptions::new().write(true).open(&etag_file)?;
+            println!("No update needed; resource not modified.");
+            Ok(())
+        },
+        StatusCode::OK => {
+            if let Some(etag) = response.headers().get(ETAG) {
+                if let Err(e) = fs::write(&etag_file, etag.to_str()?) {
+                    let _ = fs::remove_file(&etag_file);
+                    return Err(format!("Failed to write etag to file: {}", e).into());
+                }
+            }
+
+            println!("{:#?}", response.headers());
+
+            let mut file = File::create(output_file)?;
+            if let Err(e) = io::copy(&mut response, &mut file) {
+                let _ = fs::remove_file(&etag_file);
+                let _ = fs::remove_file(output_file); // Attempt to delete the output file if write fails
+                return Err(format!("Failed to write content to file: {}", e).into());
+            }
+            println!("Download completed successfully.");
+            Ok(())
+        },
+        _ => {
+            let _ = fs::remove_file(output_file); // Delete the output file on any other failure
+            let _ = fs::remove_file(etag_file);
+            Err(format!("Failed to download file: HTTP {}", response.status()).into())
+        }
+    }
 }

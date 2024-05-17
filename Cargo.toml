@@ -43,6 +43,9 @@ serde_json = { version = "1.0", optional = true } # RIS Live parsing
 env_logger = { version = "0.11", optional = true }
 clap = { version = "4.0", features = ["derive"], optional = true }
 ipnetwork = "0.20.0"
+reqwest = "0.12.4"
+futures-util = "0.3.30"
+flate2 = "1.0.30"
 
 [features]
 default = ["parser", "rustls", "cli"]
