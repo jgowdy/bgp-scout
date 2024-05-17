@@ -297,8 +297,6 @@ fn download_cached(url: &str, output_file: &str, cache_duration: Duration) -> Re
                 }
             }
 
-            println!("{:#?}", response.headers());
-
             let mut file = File::create(output_file)?;
             if let Err(e) = io::copy(&mut response, &mut file) {
                 let _ = fs::remove_file(&etag_file);
