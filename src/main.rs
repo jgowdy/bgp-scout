@@ -11,6 +11,8 @@ use reqwest::header::{HeaderMap, HeaderValue, IF_NONE_MATCH, ETAG};
 use reqwest::{blocking::Client, StatusCode};
 use flate2::read::GzDecoder;
 
+const PROGRESS_INTERVAL: u64 = 100;
+
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Opts {
@@ -58,20 +60,37 @@ fn main() -> Result<(), Box<dyn Error>> {
             let url = "https://data.ris.ripe.net/rrc00/latest-bview.gz";
             let output_file_gzip = "latest-bview.gz";
             let output_file_mrt = "latest-bview.mrt";
+
             println!("Using {}", url);
-            download_cached(url, output_file_gzip, Duration::from_secs(86400))?;
-            println!("Decompressing gzipped file {}", output_file_gzip);
-            decompress_gzip(output_file_gzip, output_file_mrt)?;
+            let cache_result = download_cached(url, output_file_gzip, Duration::from_secs(86400))?;
+
+            let mut need_decompress_gzip = false;
+            if !cache_result {
+                println!("Downloaded gzipped file {}", output_file_gzip);
+                need_decompress_gzip = true;
+            } else {
+                println!("Using cached gzipped file {}", output_file_gzip);
+                if !fs::metadata(output_file_mrt).is_ok() {
+                    println!("MRT file {} does not exist", output_file_mrt);
+                    need_decompress_gzip = true;
+                }
+            }
+            if need_decompress_gzip {
+                println!("Decompressing gzipped file {}", output_file_gzip);
+                decompress_gzip(output_file_gzip, output_file_mrt)?;
+            }
+
             println!("MRT file {}", output_file_mrt);
             output_file_mrt.to_string()
         }
     };
 
-    let mut origin_asns= opts.origin_asns.iter().cloned().collect();
+    let mut origin_asns = opts.origin_asns.iter().cloned().collect();
 
     let mut input_file = File::open(&mrt_file_path)?;
 
     if opts.filters.discover_asns {
+        println!("Discovering associated ASNs");
         let discovered_asns = discover_associated_asns(&mut input_file, &origin_asns)?;
         println!("Discovered ASNs: {:?}", discovered_asns);
         origin_asns.extend(discovered_asns);
@@ -110,7 +129,8 @@ fn decompress_gzip(input_file: &str, output_file: &str) -> io::Result<()> {
     let mut decoder = GzDecoder::new(buf_reader);
 
     // Open the output file
-    let file_out = File::create(output_file)?;
+    let output_file_tmp = output_file.to_owned() + ".tmp";
+    let file_out = File::create(&output_file_tmp)?;
     let mut buf_writer = BufWriter::new(file_out);
 
     // Copy all decompressed bytes from the decoder to the output file
@@ -118,6 +138,8 @@ fn decompress_gzip(input_file: &str, output_file: &str) -> io::Result<()> {
 
     // Ensure all data is flushed to the output file
     buf_writer.flush()?;
+
+    fs::rename(output_file_tmp, output_file)?;
 
     Ok(())
 }
@@ -142,7 +164,7 @@ fn scan_prefixes(
     let file_size = file.metadata()?.len();
     let mut reader = BufReader::new(file.try_clone()?);
     let mut parser = BgpkitParser::from_reader(&mut reader);
-    let mut status_interval = 10;
+    let mut status_interval = PROGRESS_INTERVAL;
 
     match (ipv4_only, ipv6_only) {
         (true, false) => {
@@ -154,10 +176,12 @@ fn scan_prefixes(
         _ => {}
     }
 
+    parser = parser.add_filter("type", "announce")?;
+
     let mut prefixes = HashSet::new();
     for elem in parser.into_elem_iter() {
         status_interval += 1;
-        if status_interval >= 10 {
+        if status_interval >= PROGRESS_INTERVAL {
             let position = file.seek(SeekFrom::Current(0))?;
             update_progress(position, file_size)?;
             status_interval = 0;
@@ -188,11 +212,11 @@ fn discover_associated_asns(file: &mut File, origin_asns: &HashSet<u32>) -> Resu
     let reader = BufReader::new(file.try_clone()?);    
     let parser = BgpkitParser::from_reader(reader);
     let file_size = file.metadata()?.len();
-    let mut status_interval = 10;
+    let mut status_interval = PROGRESS_INTERVAL;
 
     for elem in parser.into_elem_iter() {
         status_interval += 1;
-        if status_interval >= 10 {
+        if status_interval >= PROGRESS_INTERVAL {
             let position = file.seek(SeekFrom::Current(0))?;
             update_progress(position, file_size)?;
             status_interval = 0;
@@ -258,7 +282,7 @@ fn exclude_subnet(net: Ipv4Net, excluded_net: Ipv4Net) -> Vec<Ipv4Net> {
     result
 }
 
-fn download_cached(url: &str, output_file: &str, cache_duration: Duration) -> Result<(), Box<dyn Error>> {
+fn download_cached(url: &str, output_file: &str, cache_duration: Duration) -> Result<bool, Box<dyn Error>> {
     let etag_file = format!("{}.etag", output_file);
     let mut headers = HeaderMap::new();
 
@@ -278,7 +302,7 @@ fn download_cached(url: &str, output_file: &str, cache_duration: Duration) -> Re
     }
 
     let client = Client::new();
-    let mut response = client.get(url).headers(headers).send().map_err(|e| {
+    let mut response = client.get(url).headers(headers).timeout(Duration::from_secs(86400)).send().map_err(|e| {
         format!("Failed to send request: {}", e)
     })?;
 
@@ -286,25 +310,24 @@ fn download_cached(url: &str, output_file: &str, cache_duration: Duration) -> Re
         StatusCode::NOT_MODIFIED => {
             // Touch the ETag file to update its modified date
             OpenOptions::new().write(true).open(&etag_file)?;
-            println!("No update needed; resource not modified.");
-            Ok(())
+            Ok(true)
         },
         StatusCode::OK => {
+            let file = File::create(output_file)?;
+            let mut writer = BufWriter::new(file);
+            if let Err(e) = response.copy_to(&mut writer) {
+                let _ = fs::remove_file(&etag_file);
+                let _ = fs::remove_file(output_file); // Attempt to delete the output file if write fails
+                return Err(format!("Failed to write content to file: {}", e).into());
+            }
+
             if let Some(etag) = response.headers().get(ETAG) {
                 if let Err(e) = fs::write(&etag_file, etag.to_str()?) {
                     let _ = fs::remove_file(&etag_file);
                     return Err(format!("Failed to write etag to file: {}", e).into());
                 }
             }
-
-            let mut file = File::create(output_file)?;
-            if let Err(e) = io::copy(&mut response, &mut file) {
-                let _ = fs::remove_file(&etag_file);
-                let _ = fs::remove_file(output_file); // Attempt to delete the output file if write fails
-                return Err(format!("Failed to write content to file: {}", e).into());
-            }
-            println!("Download completed successfully.");
-            Ok(())
+            Ok(false)
         },
         _ => {
             let _ = fs::remove_file(output_file); // Delete the output file on any other failure
