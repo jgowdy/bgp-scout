@@ -1,19 +1,19 @@
 mod download;
 mod gzip;
 
+use bgpkit_parser::BgpkitParser;
 use clap::Parser;
 use ipnet::{IpAdd, IpNet};
-use bgpkit_parser::BgpkitParser;
 use std::collections::HashSet;
+use std::error::Error;
 use std::fs::File;
 use std::io::{self, BufReader};
-use std::str::FromStr;
-use std::error::Error;
 use std::net::IpAddr;
+use std::str::FromStr;
 use std::time::Duration;
 
 #[allow(unused_imports)]
-use log::{debug, info, warn, error};
+use log::{debug, error, info, warn};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -69,11 +69,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     let mrt_file = File::open(mrt_file_path)?;
-    let prefixes = scan_prefixes(&mrt_file, &origin_asns, opts.filters.ipv4_only, opts.filters.ipv6_only)?;
+    let prefixes = scan_prefixes(
+        &mrt_file,
+        &origin_asns,
+        opts.filters.ipv4_only,
+        opts.filters.ipv6_only,
+    )?;
 
     debug!("Excluded subnets in options {:?}", opts.exclude_subnets);
     let excluded_subnets = match &opts.exclude_subnets {
-        Some(subnets) => subnets.iter().map(|s| IpNet::from_str(s).expect("Failed to parse subnet")).collect(),
+        Some(subnets) => subnets
+            .iter()
+            .map(|s| IpNet::from_str(s).expect("Failed to parse subnet"))
+            .collect(),
         None => Vec::new(),
     };
     debug!("Excluded subnets parsed {:?}", excluded_subnets);
@@ -96,7 +104,11 @@ fn exclude_subnets(prefixes: &[IpNet], excluded_subnets: Vec<IpNet>) -> Vec<IpNe
 
     for exclude_net in excluded_subnets {
         debug!("Searching prefixes for excluded subnet {}", exclude_net);
-        final_prefixes.extend(prefixes.iter().flat_map(|prefix| exclude_subnet(prefix, exclude_net)));
+        final_prefixes.extend(
+            prefixes
+                .iter()
+                .flat_map(|prefix| exclude_subnet(prefix, exclude_net)),
+        );
     }
     final_prefixes
 }
@@ -105,7 +117,7 @@ fn scan_prefixes(
     file: &File,
     origin_asns: &HashSet<u32>,
     ipv4_only: bool,
-    ipv6_only: bool
+    ipv6_only: bool,
 ) -> Result<Vec<IpNet>, Box<dyn Error>> {
     let mut reader = BufReader::new(file);
     let mut parser = BgpkitParser::from_reader(&mut reader);
@@ -113,11 +125,15 @@ fn scan_prefixes(
     match (ipv4_only, ipv6_only) {
         (true, false) => {
             debug!("Filtering for only IPv4");
-            parser = parser.add_filter("ip_version", "ipv4").expect("Failed to add IPv4 filter");
+            parser = parser
+                .add_filter("ip_version", "ipv4")
+                .expect("Failed to add IPv4 filter");
         }
         (false, true) => {
             debug!("Filtering for only IPv6");
-            parser = parser.add_filter("ip_version", "ipv6").expect("Failed to add IPv6 filter");
+            parser = parser
+                .add_filter("ip_version", "ipv6")
+                .expect("Failed to add IPv6 filter");
         }
         _ => {}
     }
@@ -127,7 +143,10 @@ fn scan_prefixes(
 
     let before = instant::Instant::now();
 
-    debug!("Scanning MRT file for prefixes associated with AS numbers {:?}...", origin_asns);
+    debug!(
+        "Scanning MRT file for prefixes associated with AS numbers {:?}...",
+        origin_asns
+    );
     let mut prefixes = HashSet::new();
 
     if origin_asns.len() == 1 {
@@ -144,7 +163,11 @@ fn scan_prefixes(
         debug!("Using standard filtering for origin AS");
         for elem in parser.into_elem_iter() {
             if let Some(elem_origin_asns) = &elem.origin_asns {
-                if elem_origin_asns.iter().any(|asn| origin_asns.contains(&asn.to_u32())) && prefixes.insert(elem.prefix.prefix) {
+                if elem_origin_asns
+                    .iter()
+                    .any(|asn| origin_asns.contains(&asn.to_u32()))
+                    && prefixes.insert(elem.prefix.prefix)
+                {
                     debug!("Found new matching prefix {}", elem.prefix.prefix);
                 }
             }
@@ -156,7 +179,10 @@ fn scan_prefixes(
     #[allow(clippy::cast_precision_loss)]
     let elapsed_seconds = ((after - before).as_millis() as f64) / 1000.0;
 
-    debug!("Finished scanning MRT file after {} seconds", elapsed_seconds);
+    debug!(
+        "Finished scanning MRT file after {} seconds",
+        elapsed_seconds
+    );
 
     Ok(prefixes.iter().copied().collect())
 }
@@ -179,9 +205,11 @@ fn exclude_subnet(net: &IpNet, excluded_net: IpNet) -> Vec<IpNet> {
 
     // If net contains excluded_net, we need to split net into subnets
     // Generate subnets by splitting the net
-    let left_subnet = IpNet::new(net.network(), net.prefix_len() + 1).unwrap();
+    let left_subnet =
+        IpNet::new(net.network(), net.prefix_len() + 1).expect("Failed to split left_subnet");
     let next_ip = ipaddr_saturating_add(left_subnet.broadcast());
-    let right_subnet = IpNet::new(next_ip, left_subnet.prefix_len() + 1).unwrap();
+    let right_subnet =
+        IpNet::new(next_ip, left_subnet.prefix_len() + 1).expect("Failed to split right_subnet");
 
     if left_subnet.contains(&excluded_net.network()) {
         // Exclude from the left subnet
@@ -197,10 +225,9 @@ fn exclude_subnet(net: &IpNet, excluded_net: IpNet) -> Vec<IpNet> {
 }
 
 fn ipaddr_saturating_add(ipaddr: IpAddr) -> IpAddr {
-
     match ipaddr {
         IpAddr::V4(ip) => IpAddr::V4(ip.saturating_add(1)),
-        IpAddr::V6(ip) => IpAddr::V6(ip.saturating_add(1))
+        IpAddr::V6(ip) => IpAddr::V6(ip.saturating_add(1)),
     }
 }
 

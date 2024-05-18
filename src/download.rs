@@ -1,18 +1,18 @@
+use chrono::{DateTime, Utc};
+use filetime::FileTime;
+use reqwest::blocking::Client;
+use reqwest::header::{HeaderMap, HeaderValue, ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH};
+use reqwest::StatusCode;
 use std::error::Error;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::Path;
-use std::time::{Duration};
-use chrono::{DateTime, Utc};
-use reqwest::blocking::Client;
-use reqwest::header::{ETAG, HeaderMap, HeaderValue, IF_MODIFIED_SINCE, IF_NONE_MATCH};
-use reqwest::StatusCode;
-use filetime::FileTime;
+use std::time::Duration;
 
-#[allow(unused_imports)]
-use log::{debug, info, warn, error};
 use crate::gzip;
+#[allow(unused_imports)]
+use log::{debug, error, info, warn};
 
 /// Downloads a file from the given URL and caches it.
 ///
@@ -35,22 +35,35 @@ use crate::gzip;
 /// let result = download_cached("https://example.com/asset.gz", "/home/user/asset.gz", Duration::from_secs(86400), None);
 /// assert!(result.is_ok());
 /// ```
-pub fn cached(url: &str, output_file_name: &Path, verify_etag_interval: Option<Duration>, network_timeout: Option<Duration>) -> Result<bool, Box<dyn Error>> {
+pub fn cached(
+    url: &str,
+    output_file_name: &Path,
+    verify_etag_interval: Option<Duration>,
+    network_timeout: Option<Duration>,
+) -> Result<bool, Box<dyn Error>> {
     const DEFAULT_TIMEOUT: Duration = Duration::from_secs(86400);
     let verify_etag_duration = verify_etag_interval.unwrap_or(DEFAULT_TIMEOUT);
     let etag_file_name_str = format!("{}.etag", output_file_name.display());
     let etag_file_name = Path::new(&etag_file_name_str);
     let mut headers = HeaderMap::new();
 
-    if evaluate_etag(output_file_name, etag_file_name, verify_etag_duration, &mut headers)? {
+    if evaluate_etag(
+        output_file_name,
+        etag_file_name,
+        verify_etag_duration,
+        &mut headers,
+    )? {
         // If it's not time to verify etag again, exit early
         return Ok(true);
     }
 
     let client = Client::new();
-    let mut response = client.get(url).headers(headers).timeout(network_timeout.unwrap_or(DEFAULT_TIMEOUT)).send().map_err(|e| {
-        format!("Failed to send request: {e}")
-    })?;
+    let mut response = client
+        .get(url)
+        .headers(headers)
+        .timeout(network_timeout.unwrap_or(DEFAULT_TIMEOUT))
+        .send()
+        .map_err(|e| format!("Failed to send request: {e}"))?;
 
     match response.status() {
         StatusCode::NOT_MODIFIED => {
@@ -63,9 +76,18 @@ pub fn cached(url: &str, output_file_name: &Path, verify_etag_interval: Option<D
             } else {
                 // If the server provides an etag and the etag file does not exist, save the etag
                 if let Some(etag) = response.headers().get(ETAG) {
-                    let etag_str = etag.to_str().unwrap();
-                    debug!("Creating missing etag file {} with value {}", etag_file_name_str, etag_str);
-                    let mut file = OpenOptions::new().create(true).truncate(true).write(true).open(etag_file_name)?;
+                    let etag_str = etag
+                        .to_str()
+                        .expect("Failed to convert etag header to string");
+                    debug!(
+                        "Creating missing etag file {} with value {}",
+                        etag_file_name_str, etag_str
+                    );
+                    let mut file = OpenOptions::new()
+                        .create(true)
+                        .truncate(true)
+                        .write(true)
+                        .open(etag_file_name)?;
                     writeln!(file, "{etag_str}")?;
                 } else {
                     debug!("Etag file does not exist and server did not return an etag in Not Modified response");
@@ -73,7 +95,7 @@ pub fn cached(url: &str, output_file_name: &Path, verify_etag_interval: Option<D
             }
 
             Ok(true)
-        },
+        }
         StatusCode::OK => {
             debug!("HTTP request returned StatusCode::OK");
             let file = File::create(output_file_name)?;
@@ -86,9 +108,12 @@ pub fn cached(url: &str, output_file_name: &Path, verify_etag_interval: Option<D
             }
 
             // If the server provides a Last-Modified header, set the mtime of the output file to match
-            if let Some(last_modified_value) = response.headers().get(reqwest::header::LAST_MODIFIED) {
+            if let Some(last_modified_value) =
+                response.headers().get(reqwest::header::LAST_MODIFIED)
+            {
                 let last_modified_str = last_modified_value.to_str()?;
-                let last_modified = DateTime::parse_from_rfc2822(last_modified_str)?.with_timezone(&Utc);
+                let last_modified =
+                    DateTime::parse_from_rfc2822(last_modified_str)?.with_timezone(&Utc);
 
                 let modified_time = FileTime::from_unix_time(
                     last_modified.timestamp(),
@@ -97,7 +122,11 @@ pub fn cached(url: &str, output_file_name: &Path, verify_etag_interval: Option<D
 
                 // Set the modified time of the output file
                 filetime::set_file_mtime(output_file_name, modified_time)?;
-                debug!("Set mtime {} to match server Last-Modified: {}", output_file_name.display(), last_modified_str);
+                debug!(
+                    "Set mtime {} to match server Last-Modified: {}",
+                    output_file_name.display(),
+                    last_modified_str
+                );
             } else {
                 debug!("No Last-Modified header found.");
                 // TODO: What should we set the file time to that ensures optimal behavior?
@@ -108,14 +137,19 @@ pub fn cached(url: &str, output_file_name: &Path, verify_etag_interval: Option<D
                 debug!("Writing etag to file {}", etag_file_name.display());
                 if let Err(e) = fs::write(etag_file_name, etag.to_str()?) {
                     let _ = fs::remove_file(etag_file_name);
-                    return Err(format!("Failed to write etag to file {}: {}", etag_file_name.display(), e).into());
+                    return Err(format!(
+                        "Failed to write etag to file {}: {}",
+                        etag_file_name.display(),
+                        e
+                    )
+                    .into());
                 }
             } else {
                 debug!("Server did not return an etag");
             }
 
             Ok(false)
-        },
+        }
         _ => {
             let _ = fs::remove_file(output_file_name); // Delete the output file on any other failure
             let _ = fs::remove_file(etag_file_name);
@@ -124,7 +158,12 @@ pub fn cached(url: &str, output_file_name: &Path, verify_etag_interval: Option<D
     }
 }
 
-fn evaluate_etag(output_file_name: &Path, etag_file_name: &Path, verify_etag_duration: Duration, headers: &mut HeaderMap) -> Result<bool, Box<dyn Error>> {
+fn evaluate_etag(
+    output_file_name: &Path,
+    etag_file_name: &Path,
+    verify_etag_duration: Duration,
+    headers: &mut HeaderMap,
+) -> Result<bool, Box<dyn Error>> {
     let mut delete_etag_file = false;
     let output_file_metadata_result = fs::metadata(output_file_name);
 
@@ -132,16 +171,22 @@ fn evaluate_etag(output_file_name: &Path, etag_file_name: &Path, verify_etag_dur
     if output_file_metadata_result.is_ok() {
         debug!("Output file {} exists", output_file_name.display());
         // Does the etag file exist?
-        if let Ok(metadata) = fs::metadata(etag_file_name) {
+        if let Ok(etag_metadata) = fs::metadata(etag_file_name) {
             debug!("etag file {} exists", etag_file_name.display());
             // Can we get the mtime of the etag file?
-            if let Ok(modified) = metadata.modified() {
+            if let Ok(etag_modified) = etag_metadata.modified() {
                 // How long has it been since we've verified the etag with the server?
-                let elapsed = modified.elapsed()?;
-                debug!("etag file mtime elapsed is {} seconds", elapsed.as_secs());
-                if elapsed > verify_etag_duration {
+                let etag_modified_elapsed = etag_modified.elapsed()?;
+                debug!(
+                    "etag file mtime elapsed is {} seconds",
+                    etag_modified_elapsed.as_secs()
+                );
+                if etag_modified_elapsed > verify_etag_duration {
                     // We're going to verify etag with the server, get the etag value from the etag file
-                    debug!("etag mtime is older than {} seconds, need to recheck with If-None-Match", verify_etag_duration.as_secs());
+                    debug!(
+                        "etag mtime is older than {} seconds, need to recheck with If-None-Match",
+                        verify_etag_duration.as_secs()
+                    );
                     if let Ok(etag_file_str) = fs::read_to_string(etag_file_name) {
                         if let Some(etag) = etag_file_str.lines().next().map(str::trim) {
                             if let Ok(etag_header_value) = HeaderValue::from_str(etag) {
@@ -158,7 +203,10 @@ fn evaluate_etag(output_file_name: &Path, etag_file_name: &Path, verify_etag_dur
                         }
                     } else {
                         // Handle can't read etag value?
-                        warn!("Failed to read etag value from {}", etag_file_name.display());
+                        warn!(
+                            "Failed to read etag value from {}",
+                            etag_file_name.display()
+                        );
 
                         delete_etag_file = true;
                     }
@@ -177,7 +225,8 @@ fn evaluate_etag(output_file_name: &Path, etag_file_name: &Path, verify_etag_dur
             debug!("Etag file {} does not exist", etag_file_name.display());
 
             // If we have an output file but no etag, attempt to use If-Modified-Since
-            let output_file_metadata = output_file_metadata_result.unwrap();
+            let output_file_metadata =
+                output_file_metadata_result.expect("Failed to get metadata for output file?");
 
             if let Ok(output_file_modified) = output_file_metadata.modified() {
                 // Convert SystemTime to DateTime<Utc>
@@ -186,10 +235,19 @@ fn evaluate_etag(output_file_name: &Path, etag_file_name: &Path, verify_etag_dur
                 // Format the DateTime<Utc> to an RFC 2822 formatted string
                 let output_file_modified_str = datetime.to_rfc2822();
 
-                debug!("Adding header If-Modified-Since with value {}", output_file_modified_str);
-                headers.insert(IF_MODIFIED_SINCE, HeaderValue::from_str(output_file_modified_str.as_str())?);
+                debug!(
+                    "Adding header If-Modified-Since with value {}",
+                    output_file_modified_str
+                );
+                headers.insert(
+                    IF_MODIFIED_SINCE,
+                    HeaderValue::from_str(output_file_modified_str.as_str())?,
+                );
             } else {
-                warn!("Unable to get modified time from output file metadata {:?}", output_file_metadata);
+                warn!(
+                    "Unable to get modified time from output file metadata {:?}",
+                    output_file_metadata
+                );
             }
         }
     } else {
@@ -206,8 +264,18 @@ fn evaluate_etag(output_file_name: &Path, etag_file_name: &Path, verify_etag_dur
     Ok(false)
 }
 
-pub fn cached_gzip(url: &str, output_file_gzip: &str, output_file: &str, verify_etag_interval: Duration) -> Result<String, Box<dyn Error>> {
-    let cache_result = cached(url, Path::new(output_file_gzip), Some(verify_etag_interval), None)?;
+pub fn cached_gzip(
+    url: &str,
+    output_file_gzip: &str,
+    output_file: &str,
+    verify_etag_interval: Duration,
+) -> Result<String, Box<dyn Error>> {
+    let cache_result = cached(
+        url,
+        Path::new(output_file_gzip),
+        Some(verify_etag_interval),
+        None,
+    )?;
 
     let mut need_decompress_gzip = false;
     if cache_result {

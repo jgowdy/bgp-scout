@@ -1,7 +1,7 @@
-use std::fs::File;
-use std::{fs, io};
-use std::io::{BufReader, BufWriter, Write};
 use flate2::read::GzDecoder;
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Write};
+use std::{fs, io};
 
 pub fn decompress(input_file: &str, output_file: &str) -> io::Result<()> {
     // Open the gzip-compressed file
