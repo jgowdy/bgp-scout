@@ -11,7 +11,6 @@ use std::str::FromStr;
 use std::error::Error;
 use std::net::IpAddr;
 use std::time::Duration;
-use crate::download::download_cached_gzip;
 
 #[allow(unused_imports)]
 use log::{debug, info, warn, error};
@@ -52,26 +51,24 @@ struct Filters {
 fn main() -> Result<(), Box<dyn Error>> {
     init_logger();
     let opts: Opts = Opts::parse();
-    let origin_asns = opts.origin_asns.iter().cloned().collect();
+    let origin_asns = opts.origin_asns.iter().copied().collect();
 
-    // Check if the MRT file is provided or needs to be downloaded
-    let mrt_file_path = match opts.mrt_file {
-        Some(file) => file,
-        None => {
-            // TODO: Add parameter for which rrc to use
-            let url = "https://data.ris.ripe.net/rrc01/latest-bview.gz";
-            // TODO: Add which rrc we use to the file name
-            let output_file_gzip = "latest-bview.gz";
-            let output_file_mrt = "latest-bview.mrt";
-            // TODO: Make this configurable via parameter
-            let verify_etag_interval = Duration::from_secs(86400);
+    let mrt_file_path = if let Some(file) = opts.mrt_file {
+        file
+    } else {
+        // TODO: Add parameter for which rrc to use
+        let url = "https://data.ris.ripe.net/rrc01/latest-bview.gz";
+        // TODO: Add which rrc we use to the file name
+        let output_file_gzip = "latest-bview.gz";
+        let output_file_mrt = "latest-bview.mrt";
+        // TODO: Make this configurable via parameter
+        let verify_etag_interval = Duration::from_secs(86400);
 
-            debug!("MRT file not specified, using {}", url);
-            download_cached_gzip(url, output_file_gzip, output_file_mrt, verify_etag_interval)?
-        }
+        debug!("MRT file not specified, using {}", url);
+        download::cached_gzip(url, output_file_gzip, output_file_mrt, verify_etag_interval)?
     };
 
-    let mrt_file = File::open(&mrt_file_path)?;
+    let mrt_file = File::open(mrt_file_path)?;
     let prefixes = scan_prefixes(&mrt_file, &origin_asns, opts.filters.ipv4_only, opts.filters.ipv6_only)?;
 
     debug!("Excluded subnets in options {:?}", opts.exclude_subnets);
@@ -81,22 +78,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     debug!("Excluded subnets parsed {:?}", excluded_subnets);
 
-    if let Ok(filtered_prefixes) = exclude_subnets(prefixes, excluded_subnets) {
-        if opts.json {
-            serde_json::to_writer(io::stdout(), &filtered_prefixes)?;
-        } else {
-            for prefix in filtered_prefixes {
-                println!("{}", prefix);
-            }
-        }
+    let filtered_prefixes = exclude_subnets(&prefixes, excluded_subnets);
+    if opts.json {
+        serde_json::to_writer(io::stdout(), &filtered_prefixes)?;
     } else {
-        error!("Failed to apply excluded subnets");
+        for prefix in filtered_prefixes {
+            println!("{prefix}");
+        }
     }
 
     Ok(())
 }
 
-fn exclude_subnets(prefixes: Vec<IpNet>, excluded_subnets: Vec<IpNet>) -> Result<Vec<IpNet>, Box<dyn Error>> {
+fn exclude_subnets(prefixes: &[IpNet], excluded_subnets: Vec<IpNet>) -> Vec<IpNet> {
     let mut final_prefixes = Vec::new();
     debug!("Applying excluded subnets {:?}", excluded_subnets);
 
@@ -104,7 +98,7 @@ fn exclude_subnets(prefixes: Vec<IpNet>, excluded_subnets: Vec<IpNet>) -> Result
         debug!("Searching prefixes for excluded subnet {}", exclude_net);
         final_prefixes.extend(prefixes.iter().flat_map(|prefix| exclude_subnet(prefix, exclude_net)));
     }
-    Ok(final_prefixes)
+    final_prefixes
 }
 
 fn scan_prefixes(
@@ -150,10 +144,8 @@ fn scan_prefixes(
         debug!("Using standard filtering for origin AS");
         for elem in parser.into_elem_iter() {
             if let Some(elem_origin_asns) = &elem.origin_asns {
-                if elem_origin_asns.iter().any(|asn| origin_asns.contains(&asn.to_u32())) {
-                    if prefixes.insert(elem.prefix.prefix) {
-                        debug!("Found new matching prefix {}", elem.prefix.prefix);
-                    }
+                if elem_origin_asns.iter().any(|asn| origin_asns.contains(&asn.to_u32())) && prefixes.insert(elem.prefix.prefix) {
+                    debug!("Found new matching prefix {}", elem.prefix.prefix);
                 }
             }
         }
@@ -161,9 +153,12 @@ fn scan_prefixes(
 
     let after = instant::Instant::now();
 
-    debug!("Finished scanning MRT file after {} seconds", ((after - before).as_millis() as f64) / 1000.0 );
+    #[allow(clippy::cast_precision_loss)]
+    let elapsed_seconds = ((after - before).as_millis() as f64) / 1000.0;
 
-    Ok(prefixes.iter().cloned().collect())
+    debug!("Finished scanning MRT file after {} seconds", elapsed_seconds);
+
+    Ok(prefixes.iter().copied().collect())
 }
 
 fn exclude_subnet(net: &IpNet, excluded_net: IpNet) -> Vec<IpNet> {
@@ -202,11 +197,11 @@ fn exclude_subnet(net: &IpNet, excluded_net: IpNet) -> Vec<IpNet> {
 }
 
 fn ipaddr_saturating_add(ipaddr: IpAddr) -> IpAddr {
-    let next_ip = match ipaddr {
+
+    match ipaddr {
         IpAddr::V4(ip) => IpAddr::V4(ip.saturating_add(1)),
         IpAddr::V6(ip) => IpAddr::V6(ip.saturating_add(1))
-    };
-    next_ip
+    }
 }
 
 #[cfg(feature = "diagnostic_logging")]

@@ -3,7 +3,7 @@ use std::{fs, io};
 use std::io::{BufReader, BufWriter, Write};
 use flate2::read::GzDecoder;
 
-pub fn decompress_gzip(input_file: &str, output_file: &str) -> io::Result<()> {
+pub fn decompress(input_file: &str, output_file: &str) -> io::Result<()> {
     // Open the gzip-compressed file
     let file_in = File::open(input_file)?;
     let buf_reader = BufReader::new(file_in);
