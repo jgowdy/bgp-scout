@@ -95,3 +95,85 @@ xz = [
 lz = [
     "oneio/lz"
 ]
+
+#  GoDaddy Rust Lint Rules
+#
+#  These Rust lint rules should be added to every Rust workspace-level `Cargo.toml` file at GoDaddy.
+#   * This comment header should not be included *
+#
+#  The warnings are intentionally over-restrictive.
+#  Some rules may need to be disabled in certain projects, however, alternative approaches will usually be better.
+#
+#  Examples where a different approach is better:
+#  - Proper `Result` propagation should be used over `.unwrap()` whenever possible. If not possible `.expect()` should be used.
+#
+#  Examples where a rule will need to be disabled:
+#  - CLI projects will need to allow `clippy::print_stdout` and `clippy::print_stderr` in the CLI portion.
+#  - Projects which use FFI will need to `unsafe_code = "deny"` rather than `forbid`.
+#
+#  Additionally, the disabled-by-default `clippy::multiple_crate_versions` rule can be useful but is easily triggered by dependency tree drift.
+
+# NOTE:
+#
+# In projects which make use of documentation examples, it is still preferable to include the following directives at crate-level (at the top of `lib.rs`).
+#
+# ```rust
+# #![doc(test(attr(deny(future_incompatible, warnings))))]
+# #![doc(test(attr(allow(unused_extern_crates, unused_variables))))]
+# ```
+#
+# It is also suggested to do `#![allow(clippy::unwrap_used)]` at the top of files in the `tests/` directory.
+
+# HOW TO USE
+#
+# Minimum Rust Version: 1.74
+# Copy the following into the bottom your `Cargo.toml` file.
+# For each `Cargo.toml` file (including this one), include the `[lints]` with `workspace = true`.
+
+[lints]
+workspace = true
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+future_incompatible = "deny"
+meta_variable_misuse = "warn"
+missing_debug_implementations = "warn"
+noop_method_call = "warn"
+rust_2018_idioms = "warn"
+trivial_casts = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+unused_macro_rules = "warn"
+variant_size_differences = "warn"
+
+[workspace.lints.clippy]
+default_union_representation = "deny"
+exit = "deny"
+lossy_float_literal = "deny"
+mem_forget = "deny"
+multiple_inherent_impl = "deny"
+mut_mut = "deny"
+ptr_as_ptr = "deny"
+unwrap_in_result = "deny"
+unwrap_used = "deny"
+wildcard_dependencies = "deny"
+dbg_macro = "warn"
+empty_drop = "warn"
+fallible_impl_from = "warn"
+inefficient_to_string = "warn"
+macro_use_imports = "warn"
+match_same_arms = "warn"
+# multiple_crate_versions = "warn"
+no_effect_underscore_binding = "warn"
+panic = "warn"
+print_stderr = "warn"
+print_stdout = "warn"
+same_name_method = "warn"
+single_char_lifetime_names = "warn"
+string_to_string = "warn"
+trait_duplication_in_bounds = "warn"
+type_repetition_in_bounds = "warn"
+unimplemented = "warn"
+unneeded_field_pattern = "warn"
+unseparated_literal_suffix = "warn"
+used_underscore_binding = "warn"
