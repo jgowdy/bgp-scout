@@ -46,9 +46,12 @@ ipnetwork = "0.20.0"
 reqwest = "0.12.4"
 futures-util = "0.3.30"
 flate2 = "1.0.30"
+filetime = "0.2.23"
+instant = "0.1.13"
 
 [features]
 default = ["parser", "rustls", "cli"]
+diagnostic_logging = []
 models = [
     "num_enum",
     "num_enum/complex-expressions",
