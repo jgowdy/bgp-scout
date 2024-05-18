@@ -77,7 +77,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
 
     let excluded_subnets = transform_subnets(opts.exclude_subnets);
-    let filtered_prefixes= match excluded_subnets {
+    let filtered_prefixes = match excluded_subnets {
         Some(excluded) => exclude_subnets(&prefixes, excluded),
         None => prefixes
     };
