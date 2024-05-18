@@ -5,26 +5,16 @@ use clap::Parser;
 use ipnet::{IpAdd, IpNet};
 use bgpkit_parser::BgpkitParser;
 use std::collections::HashSet;
-use std::fs::{File};
+use std::fs::File;
 use std::io::{self, BufReader};
 use std::str::FromStr;
 use std::error::Error;
 use std::net::IpAddr;
 use std::time::Duration;
-use crate::download::{download_cached_gzip};
+use crate::download::download_cached_gzip;
 
 #[allow(unused_imports)]
 use log::{debug, info, warn, error};
-
-#[cfg(feature = "diagnostic_logging")]
-fn init_logger() {
-    env_logger::init();
-}
-
-#[cfg(not(feature = "diagnostic_logging"))]
-fn init_logger() {
-    // No-op when diagnostic logging is not enabled
-}
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -60,16 +50,20 @@ struct Filters {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let opts: Opts = Opts::parse();
     init_logger();
+    let opts: Opts = Opts::parse();
+    let origin_asns = opts.origin_asns.iter().cloned().collect();
 
     // Check if the MRT file is provided or needs to be downloaded
     let mrt_file_path = match opts.mrt_file {
         Some(file) => file,
         None => {
+            // TODO: Add parameter for which rrc to use
             let url = "https://data.ris.ripe.net/rrc01/latest-bview.gz";
+            // TODO: Add which rrc we use to the file name
             let output_file_gzip = "latest-bview.gz";
             let output_file_mrt = "latest-bview.mrt";
+            // TODO: Make this configurable via parameter
             let verify_etag_interval = Duration::from_secs(86400);
 
             debug!("MRT file not specified, using {}", url);
@@ -77,37 +71,49 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    let origin_asns = opts.origin_asns.iter().cloned().collect();
-    let mut input_file = File::open(&mrt_file_path)?;
-    let mut prefixes = scan_prefixes(&mut input_file, &origin_asns, opts.filters.ipv4_only, opts.filters.ipv6_only)?;
-    
-    // Exclude subnets if specified
-    if let Some(exclude_subnets) = opts.exclude_subnets {
-        debug!("Applying excluded subnets {:?}", exclude_subnets);
-        for exclude_net_str in exclude_subnets {
-            let exclude_net = IpNet::from_str(&exclude_net_str)?;
-            prefixes = prefixes.into_iter().flat_map(|prefix| exclude_subnet(prefix, exclude_net)).collect();
+    let mrt_file = File::open(&mrt_file_path)?;
+    let prefixes = scan_prefixes(&mrt_file, &origin_asns, opts.filters.ipv4_only, opts.filters.ipv6_only)?;
+
+    debug!("Excluded subnets in options {:?}", opts.exclude_subnets);
+    let excluded_subnets = match &opts.exclude_subnets {
+        Some(subnets) => subnets.iter().map(|s| IpNet::from_str(s).expect("Failed to parse subnet")).collect(),
+        None => Vec::new(),
+    };
+    debug!("Excluded subnets parsed {:?}", excluded_subnets);
+
+    if let Ok(filtered_prefixes) = exclude_subnets(prefixes, excluded_subnets) {
+        if opts.json {
+            serde_json::to_writer(io::stdout(), &filtered_prefixes)?;
+        } else {
+            for prefix in filtered_prefixes {
+                println!("{}", prefix);
+            }
         }
+    } else {
+        error!("Failed to apply excluded subnets");
     }
 
-    if opts.json {
-        serde_json::to_writer(io::stdout(), &prefixes)?;
-    } else {
-        for prefix in prefixes {
-            println!("{}", prefix);
-        }
-    }
-    
     Ok(())
 }
 
+fn exclude_subnets(prefixes: Vec<IpNet>, excluded_subnets: Vec<IpNet>) -> Result<Vec<IpNet>, Box<dyn Error>> {
+    let mut final_prefixes = Vec::new();
+    debug!("Applying excluded subnets {:?}", excluded_subnets);
+
+    for exclude_net in excluded_subnets {
+        debug!("Searching prefixes for excluded subnet {}", exclude_net);
+        final_prefixes.extend(prefixes.iter().flat_map(|prefix| exclude_subnet(prefix, exclude_net)));
+    }
+    Ok(final_prefixes)
+}
+
 fn scan_prefixes(
-    file: &mut File,
+    file: &File,
     origin_asns: &HashSet<u32>,
     ipv4_only: bool,
     ipv6_only: bool
 ) -> Result<Vec<IpNet>, Box<dyn Error>> {
-    let mut reader = BufReader::new(file.try_clone()?);
+    let mut reader = BufReader::new(file);
     let mut parser = BgpkitParser::from_reader(&mut reader);
 
     match (ipv4_only, ipv6_only) {
@@ -122,8 +128,6 @@ fn scan_prefixes(
         _ => {}
     }
 
-    //TODO: Test the performance of filtering per AS number specified with the native AS origin filter
-    //TODO:
     debug!("Filtering for only announce records");
     parser = parser.add_filter("type", "announce")?;
 
@@ -131,11 +135,25 @@ fn scan_prefixes(
 
     debug!("Scanning MRT file for prefixes associated with AS numbers {:?}...", origin_asns);
     let mut prefixes = HashSet::new();
-    for elem in parser.into_elem_iter() {
-        if let Some(elem_origin_asns) = &elem.origin_asns {
-            if elem_origin_asns.iter().any(|asn| origin_asns.contains(&asn.to_u32())) {
-                if prefixes.insert(elem.prefix.prefix) {
-                    debug!("Found new matching prefix {}", elem.prefix.prefix);
+
+    if origin_asns.len() == 1 {
+        // There's only one AS number, use bgpkit-parser native filter as it's faster
+        debug!("Using native filtering for origin AS");
+        parser = parser.add_filter("origin_asn", "53429")?;
+        for elem in parser.into_elem_iter() {
+            if prefixes.insert(elem.prefix.prefix) {
+                debug!("Found new matching prefix {}", elem.prefix.prefix);
+            }
+        }
+    } else {
+        // Since bgpkit-parser doesn't support filtering on more than one origin, filter manually
+        debug!("Using standard filtering for origin AS");
+        for elem in parser.into_elem_iter() {
+            if let Some(elem_origin_asns) = &elem.origin_asns {
+                if elem_origin_asns.iter().any(|asn| origin_asns.contains(&asn.to_u32())) {
+                    if prefixes.insert(elem.prefix.prefix) {
+                        debug!("Found new matching prefix {}", elem.prefix.prefix);
+                    }
                 }
             }
         }
@@ -143,22 +161,22 @@ fn scan_prefixes(
 
     let after = instant::Instant::now();
 
-    debug!("Finished scanning MRT file after {} seconds", (after - before).as_secs());
+    debug!("Finished scanning MRT file after {} seconds", ((after - before).as_millis() as f64) / 1000.0 );
 
     Ok(prefixes.iter().cloned().collect())
 }
 
-fn exclude_subnet(net: IpNet, excluded_net: IpNet) -> Vec<IpNet> {
+fn exclude_subnet(net: &IpNet, excluded_net: IpNet) -> Vec<IpNet> {
     let mut result = Vec::new();
 
     // If excluded_net is not within net, return the whole net
     if !net.contains(&excluded_net.network()) || !net.contains(&excluded_net.broadcast()) {
-        result.push(net);
+        result.push(*net);
         return result;
     }
 
     // Check if net and excluded_net are the same
-    if net == excluded_net {
+    if *net == excluded_net {
         return result; // Empty result as the entire net is excluded
     }
 
@@ -167,23 +185,36 @@ fn exclude_subnet(net: IpNet, excluded_net: IpNet) -> Vec<IpNet> {
     // If net contains excluded_net, we need to split net into subnets
     // Generate subnets by splitting the net
     let left_subnet = IpNet::new(net.network(), net.prefix_len() + 1).unwrap();
-    let next_ip = match left_subnet.broadcast() {
-        IpAddr::V4(ip) => IpAddr::V4(ip.saturating_add(1)),
-        IpAddr::V6(ip) => IpAddr::V6(ip.saturating_add(1)),
-    };
+    let next_ip = ipaddr_saturating_add(left_subnet.broadcast());
     let right_subnet = IpNet::new(next_ip, left_subnet.prefix_len() + 1).unwrap();
 
     if left_subnet.contains(&excluded_net.network()) {
         // Exclude from the left subnet
-        result.extend(exclude_subnet(left_subnet, excluded_net));
+        result.extend(exclude_subnet(&left_subnet, excluded_net));
         result.push(right_subnet); // Add the right subnet as it is
     } else if right_subnet.contains(&excluded_net.network()) {
         // Exclude from the right subnet
         result.push(left_subnet); // Add the left subnet as it is
-        result.extend(exclude_subnet(right_subnet, excluded_net));
+        result.extend(exclude_subnet(&right_subnet, excluded_net));
     }
 
     result
 }
 
+fn ipaddr_saturating_add(ipaddr: IpAddr) -> IpAddr {
+    let next_ip = match ipaddr {
+        IpAddr::V4(ip) => IpAddr::V4(ip.saturating_add(1)),
+        IpAddr::V6(ip) => IpAddr::V6(ip.saturating_add(1))
+    };
+    next_ip
+}
 
+#[cfg(feature = "diagnostic_logging")]
+fn init_logger() {
+    env_logger::init();
+}
+
+#[cfg(not(feature = "diagnostic_logging"))]
+fn init_logger() {
+    // No-op when diagnostic logging is not enabled
+}
