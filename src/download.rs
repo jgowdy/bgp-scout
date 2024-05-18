@@ -32,7 +32,7 @@ use log::{debug, error, info, warn};
 ///
 /// ```
 /// use std::time::Duration;
-/// let result = download_cached("https://example.com/asset.gz", "/home/user/asset.gz", Duration::from_secs(86400), None);
+/// let result = download::cached("https://example.com/asset.gz", "/home/user/asset.gz", Duration::from_secs(86400), None);
 /// assert!(result.is_ok());
 /// ```
 pub fn cached(
@@ -172,19 +172,19 @@ fn evaluate_etag(
         debug!("Output file {} exists", output_file_name.display());
         // Does the etag file exist?
         if let Ok(etag_metadata) = fs::metadata(etag_file_name) {
-            debug!("etag file {} exists", etag_file_name.display());
+            debug!("Etag file {} exists", etag_file_name.display());
             // Can we get the mtime of the etag file?
             if let Ok(etag_modified) = etag_metadata.modified() {
                 // How long has it been since we've verified the etag with the server?
                 let etag_modified_elapsed = etag_modified.elapsed()?;
                 debug!(
-                    "etag file mtime elapsed is {} seconds",
+                    "Etag file mtime elapsed is {} seconds",
                     etag_modified_elapsed.as_secs()
                 );
                 if etag_modified_elapsed > verify_etag_duration {
                     // We're going to verify etag with the server, get the etag value from the etag file
                     debug!(
-                        "etag mtime is older than {} seconds, need to recheck with If-None-Match",
+                        "Etag mtime is older than {} seconds, need to recheck with If-None-Match",
                         verify_etag_duration.as_secs()
                     );
                     if let Ok(etag_file_str) = fs::read_to_string(etag_file_name) {

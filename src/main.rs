@@ -76,17 +76,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         opts.filters.ipv6_only,
     )?;
 
-    debug!("Excluded subnets in options {:?}", opts.exclude_subnets);
-    let excluded_subnets = match &opts.exclude_subnets {
-        Some(subnets) => subnets
-            .iter()
-            .map(|s| IpNet::from_str(s).expect("Failed to parse subnet"))
-            .collect(),
-        None => Vec::new(),
+    let excluded_subnets = transform_subnets(opts.exclude_subnets);
+    let filtered_prefixes= match excluded_subnets {
+        Some(excluded) => exclude_subnets(&prefixes, excluded),
+        None => prefixes
     };
-    debug!("Excluded subnets parsed {:?}", excluded_subnets);
 
-    let filtered_prefixes = exclude_subnets(&prefixes, excluded_subnets);
     if opts.json {
         serde_json::to_writer(io::stdout(), &filtered_prefixes)?;
     } else {
@@ -96,6 +91,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+fn transform_subnets(opts: Option<Vec<String>>) -> Option<Vec<IpNet>> {
+    match opts {
+        Some(subnets) if !subnets.is_empty() => {
+            let parsed_subnets: Vec<IpNet> = subnets.into_iter()
+                .filter_map(|s| IpNet::from_str(&s).ok())
+                .collect();
+
+            if parsed_subnets.is_empty() {
+                None
+            } else {
+                Some(parsed_subnets)
+            }
+        },
+        _ => None,
+    }
 }
 
 fn exclude_subnets(prefixes: &[IpNet], excluded_subnets: Vec<IpNet>) -> Vec<IpNet> {
