@@ -38,11 +38,11 @@ use log::{debug, error, info, warn};
 pub fn cached(
     url: &str,
     output_file_name: &Path,
-    verify_etag_interval: Option<Duration>,
+    verify_cache_interval: Option<Duration>,
     network_timeout: Option<Duration>,
 ) -> Result<bool, Box<dyn Error>> {
     const DEFAULT_TIMEOUT: Duration = Duration::from_secs(86400);
-    let verify_etag_duration = verify_etag_interval.unwrap_or(DEFAULT_TIMEOUT);
+    let verify_etag_duration = verify_cache_interval.unwrap_or(DEFAULT_TIMEOUT);
     let etag_file_name_str = format!("{}.etag", output_file_name.display());
     let etag_file_name = Path::new(&etag_file_name_str);
     let mut headers = HeaderMap::new();

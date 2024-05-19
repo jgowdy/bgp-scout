@@ -6,7 +6,9 @@ use clap::{Subcommand, Parser};
 use ipnet::{IpAdd, IpNet};
 use std::collections::HashSet;
 use std::error::Error;
+use std::fs;
 use std::fs::File;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, BufReader};
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -29,8 +31,8 @@ enum Commands {
         #[arg(required = true, index = 1)]
         origin_asns: Vec<u32>,
 
-        /// MRT file URL or local path
-        #[clap(short = 'f', long = "mrt-file")]
+        /// MRT file
+        #[clap(short = 'f', long, conflicts_with = "rrc", conflicts_with = "url")]
         mrt_file: Option<String>,
 
         /// Output as JSON objects
@@ -44,6 +46,18 @@ enum Commands {
         /// Output IP addresses as ranges
         #[clap(long, default_value_t = false)]
         ip_ranges: bool,
+
+        /// Specify RRC server number (00-25), conflicts with specifying URL or MRT file directly
+        #[clap(short = 'r', long, conflicts_with = "url", conflicts_with = "mrt_file", value_parser = clap::value_parser!(u8).range(0..=25))]
+        rrc: Option<u8>,
+
+        /// Specify an entire URL, conflicts with specifying RRC or MRT file directly
+        #[clap(long, conflicts_with = "rrc", conflicts_with = "mrt_file")]
+        url: Option<String>,
+
+        /// Verification interval for cache, in seconds
+        #[clap(long, default_value_t = 86400)]
+        verify_cache_seconds: u64,
 
         #[clap(flatten)]
         filters: Filters,
@@ -98,7 +112,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             json,
             exclude_subnets,
             ip_ranges,
+            verify_cache_seconds,
             filters,
+            rrc,
+            url,
         } => {
             let origin_asns = origin_asns.iter().copied().collect();
             let excluded_subnets = transform_subnets_ipnet(&exclude_subnets);
@@ -106,16 +123,22 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mrt_file_path = if let Some(file) = mrt_file {
                 file.clone()
             } else {
-                // TODO: Add parameter for which rrc to use
-                let url = "https://data.ris.ripe.net/rrc01/latest-bview.gz";
-                // TODO: Add which rrc we use to the file name
-                let output_file_gzip = "latest-bview.gz";
-                let output_file_mrt = "latest-bview.mrt";
-                // TODO: Make this configurable via parameter
-                let verify_etag_interval = Duration::from_secs(86400);
+                let download_url = match (url, rrc) {
+                    (Some(u), _) => u.clone(),
+                    (None, rrc) => format!("https://data.ris.ripe.net/rrc{:02}/latest-bview.gz", rrc.unwrap_or(1)),
+                };
 
-                debug!("MRT file not specified, using {}", url);
-                download::cached_gzip(url, output_file_gzip, output_file_mrt, verify_etag_interval)?
+                let mut hasher = DefaultHasher::new();
+                download_url.hash(&mut hasher);
+                let hash = hasher.finish();
+
+                fs::create_dir_all(".cache")?;
+                let output_file_gzip = format!(".cache/{:x}-latest-bview.gz", hash);
+                let output_file_mrt = format!(".cache/{:x}-latest-bview.mrt", hash);
+                let verify_cache_interval = Duration::from_secs(*verify_cache_seconds);
+
+                debug!("Using {download_url} for MRT source");
+                download::cached_gzip(&download_url, &output_file_gzip, &output_file_mrt, verify_cache_interval)?
             };
 
             let mrt_file = File::open(mrt_file_path)?;

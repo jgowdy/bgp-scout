@@ -16,3 +16,4 @@ Cargo.lock
 latest-bview*
 
 .idea/
+.cache/
