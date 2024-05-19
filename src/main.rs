@@ -2,7 +2,7 @@ mod download;
 mod gzip;
 
 use bgpkit_parser::BgpkitParser;
-use clap::Parser;
+use clap::{Subcommand, Parser};
 use ipnet::{IpAdd, IpNet};
 use std::collections::HashSet;
 use std::error::Error;
@@ -17,28 +17,47 @@ use log::{debug, error, info, warn};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
-struct Opts {
-    #[arg(required = true, index = 1)]
-    origin_asns: Vec<u32>,
+struct Cli {
+    #[clap(subcommand)]
+    command: Commands,
+}
 
-    /// MRT file URL or local path
-    #[clap(short = 'f', long = "mrt-file")]
-    mrt_file: Option<String>,
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Find netblocks based on provided parameters
+    FindNetblocks {
+        #[arg(required = true, index = 1)]
+        origin_asns: Vec<u32>,
 
-    /// Output as JSON objects
-    #[clap(long)]
-    json: bool,
+        /// MRT file URL or local path
+        #[clap(short = 'f', long = "mrt-file")]
+        mrt_file: Option<String>,
 
-    /// Exclude specified subnets
-    #[clap(long, value_delimiter = ',')]
-    exclude_subnets: Option<Vec<String>>,
+        /// Output as JSON objects
+        #[clap(long)]
+        json: bool,
 
-    /// Output IP addresses as ranges
-    #[clap(long, default_value_t = false)]
-    ip_ranges: bool,
+        /// Exclude specified subnets
+        #[clap(long, value_delimiter = ',')]
+        exclude_subnets: Option<Vec<String>>,
 
-    #[clap(flatten)]
-    filters: Filters,
+        /// Output IP addresses as ranges
+        #[clap(long, default_value_t = false)]
+        ip_ranges: bool,
+
+        #[clap(flatten)]
+        filters: Filters,
+    },
+    /// Check if one netblock contains another
+    NetblockContains {
+        /// The netblock to search for
+        #[clap(value_parser)]
+        needle: String,
+
+        /// The netblock to check containment
+        #[clap(value_parser)]
+        haystack: String,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -70,39 +89,60 @@ fn transform_subnets_string(subnets: &[IpNet], ranges: bool) -> Vec<String> {
 
 fn main() -> Result<(), Box<dyn Error>> {
     init_logger();
-    let opts: Opts = Opts::parse();
-    let origin_asns = opts.origin_asns.iter().copied().collect();
-    let excluded_subnets = transform_subnets_ipnet(opts.exclude_subnets);
+    let cli = Cli::parse();
 
-    let mrt_file_path = if let Some(file) = opts.mrt_file {
-        file
-    } else {
-        // TODO: Add parameter for which rrc to use
-        let url = "https://data.ris.ripe.net/rrc01/latest-bview.gz";
-        // TODO: Add which rrc we use to the file name
-        let output_file_gzip = "latest-bview.gz";
-        let output_file_mrt = "latest-bview.mrt";
-        // TODO: Make this configurable via parameter
-        let verify_etag_interval = Duration::from_secs(86400);
+    match &cli.command {
+        Commands::FindNetblocks {
+            origin_asns,
+            mrt_file,
+            json,
+            exclude_subnets,
+            ip_ranges,
+            filters,
+        } => {
+            let origin_asns = origin_asns.iter().copied().collect();
+            let excluded_subnets = transform_subnets_ipnet(&exclude_subnets);
 
-        debug!("MRT file not specified, using {}", url);
-        download::cached_gzip(url, output_file_gzip, output_file_mrt, verify_etag_interval)?
-    };
+            let mrt_file_path = if let Some(file) = mrt_file {
+                file.clone()
+            } else {
+                // TODO: Add parameter for which rrc to use
+                let url = "https://data.ris.ripe.net/rrc01/latest-bview.gz";
+                // TODO: Add which rrc we use to the file name
+                let output_file_gzip = "latest-bview.gz";
+                let output_file_mrt = "latest-bview.mrt";
+                // TODO: Make this configurable via parameter
+                let verify_etag_interval = Duration::from_secs(86400);
 
-    let mrt_file = File::open(mrt_file_path)?;
-    let prefixes = scan_prefixes(
-        &mrt_file,
-        &origin_asns,
-        opts.filters.ipv4_only,
-        opts.filters.ipv6_only,
-    )?;
+                debug!("MRT file not specified, using {}", url);
+                download::cached_gzip(url, output_file_gzip, output_file_mrt, verify_etag_interval)?
+            };
 
-    let filtered_prefixes = match excluded_subnets {
-        Some(excluded) => exclude_subnets(&prefixes, excluded),
-        None => prefixes,
-    };
+            let mrt_file = File::open(mrt_file_path)?;
+            let prefixes = scan_prefixes(
+                &mrt_file,
+                &origin_asns,
+                filters.ipv4_only,
+                filters.ipv6_only,
+            )?;
 
-    render_output(&filtered_prefixes, opts.json, opts.ip_ranges)?;
+            let filtered_prefixes = match excluded_subnets {
+                Some(excluded) => crate::exclude_subnets(&prefixes, excluded),
+                None => prefixes,
+            };
+
+            render_output(&filtered_prefixes, *json, *ip_ranges)?;
+        }
+        Commands::NetblockContains { needle, haystack } => {
+            let needle_net: IpNet = IpNet::from_str(&needle)?;
+            let haystack_net: IpNet = IpNet::from_str(&haystack)?;
+            if haystack_net.contains(&needle_net.addr()) {
+                println!("{} contains {}", haystack, needle);
+            } else {
+                println!("{} does not contain {}", haystack, needle);
+            }
+        }
+    }
 
     Ok(())
 }
@@ -120,7 +160,7 @@ fn render_output(prefixes: &[IpNet], json: bool, ranges: bool) -> Result<(), Box
     Ok(())
 }
 
-fn transform_subnets_ipnet(opts: Option<Vec<String>>) -> Option<Vec<IpNet>> {
+fn transform_subnets_ipnet(opts: &Option<Vec<String>>) -> Option<Vec<IpNet>> {
     match opts {
         Some(subnets) if !subnets.is_empty() => {
             let parsed_subnets: Vec<IpNet> = subnets
