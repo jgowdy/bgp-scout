@@ -33,6 +33,10 @@ struct Opts {
     #[clap(long, value_delimiter = ',')]
     exclude_subnets: Option<Vec<String>>,
 
+    /// Output IP addresses as ranges
+    #[clap(long, default_value_t = false)]
+    ip_ranges: bool,
+
     #[clap(flatten)]
     filters: Filters,
 }
@@ -48,11 +52,27 @@ struct Filters {
     ipv6_only: bool,
 }
 
+fn prefix_to_range(prefix: &IpNet) -> String {
+    format!("{}-{}", prefix.network(), prefix.broadcast())
+}
+
+fn transform_subnets_string(subnets: &[IpNet], ranges: bool) -> Vec<String> {
+    let mut result = Vec::new();
+    for subnet in subnets {
+        if ranges {
+            result.push(prefix_to_range(&subnet));
+        } else {
+            result.push(subnet.to_string());
+        }
+    }
+    result
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     init_logger();
     let opts: Opts = Opts::parse();
     let origin_asns = opts.origin_asns.iter().copied().collect();
-    let excluded_subnets = transform_subnets(opts.exclude_subnets);
+    let excluded_subnets = transform_subnets_ipnet(opts.exclude_subnets);
 
     let mrt_file_path = if let Some(file) = opts.mrt_file {
         file
@@ -79,24 +99,32 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let filtered_prefixes = match excluded_subnets {
         Some(excluded) => exclude_subnets(&prefixes, excluded),
-        None => prefixes
+        None => prefixes,
     };
 
-    if opts.json {
-        serde_json::to_writer(io::stdout(), &filtered_prefixes)?;
-    } else {
-        for prefix in filtered_prefixes {
-            println!("{prefix}");
-        }
-    }
+    render_output(&filtered_prefixes, opts.json, opts.ip_ranges)?;
 
     Ok(())
 }
 
-fn transform_subnets(opts: Option<Vec<String>>) -> Option<Vec<IpNet>> {
+fn render_output(prefixes: &[IpNet], json: bool, ranges: bool) -> Result<(), Box<dyn Error>> {
+    let mut output = io::stdout();
+    let prefix_strings = transform_subnets_string(prefixes, ranges);
+    if json {
+        serde_json::to_writer(&mut output, &prefix_strings)?;
+    } else {
+        for prefix in prefix_strings {
+            println!("{prefix}");
+        }
+    }
+    Ok(())
+}
+
+fn transform_subnets_ipnet(opts: Option<Vec<String>>) -> Option<Vec<IpNet>> {
     match opts {
         Some(subnets) if !subnets.is_empty() => {
-            let parsed_subnets: Vec<IpNet> = subnets.into_iter()
+            let parsed_subnets: Vec<IpNet> = subnets
+                .into_iter()
                 .filter_map(|s| IpNet::from_str(&s).ok())
                 .collect();
 
@@ -105,7 +133,7 @@ fn transform_subnets(opts: Option<Vec<String>>) -> Option<Vec<IpNet>> {
             } else {
                 Some(parsed_subnets)
             }
-        },
+        }
         _ => None,
     }
 }
