@@ -19,3 +19,8 @@ repos:
             -   id: fmt
             -   id: clippy
             -   id: cargo-check
+    -   repo: https://github.com/editorconfig-checker/editorconfig-checker.python
+        rev: 2.7.3
+        hooks:
+            -   id: editorconfig-checker
+                alias: ec
