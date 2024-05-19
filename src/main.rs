@@ -52,6 +52,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     init_logger();
     let opts: Opts = Opts::parse();
     let origin_asns = opts.origin_asns.iter().copied().collect();
+    let excluded_subnets = transform_subnets(opts.exclude_subnets);
 
     let mrt_file_path = if let Some(file) = opts.mrt_file {
         file
@@ -76,7 +77,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         opts.filters.ipv6_only,
     )?;
 
-    let excluded_subnets = transform_subnets(opts.exclude_subnets);
     let filtered_prefixes = match excluded_subnets {
         Some(excluded) => exclude_subnets(&prefixes, excluded),
         None => prefixes
