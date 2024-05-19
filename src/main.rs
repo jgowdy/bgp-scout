@@ -136,8 +136,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let hash = hasher.finish();
 
                 fs::create_dir_all(".cache")?;
-                let output_file_gzip = format!(".cache/{:x}-latest-bview.gz", hash);
-                let output_file_mrt = format!(".cache/{:x}-latest-bview.mrt", hash);
+                let output_file_gzip = format!(".cache/{hash:x}-latest-bview.gz");
+                let output_file_mrt = format!(".cache/{hash:x}-latest-bview.mrt");
                 let verify_cache_interval = Duration::from_secs(*verify_cache_seconds);
 
                 debug!("Using {download_url} for MRT source");
@@ -168,9 +168,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             let needle_net: IpNet = IpNet::from_str(needle)?;
             let haystack_net: IpNet = IpNet::from_str(haystack)?;
             if haystack_net.contains(&needle_net.addr()) {
-                println!("{} contains {}", haystack, needle);
+                println!("{haystack} contains {needle}");
             } else {
-                println!("{} does not contain {}", haystack, needle);
+                println!("{haystack} does not contain {needle}");
             }
         }
     }
