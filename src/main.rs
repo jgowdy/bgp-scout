@@ -2,7 +2,7 @@ mod download;
 mod gzip;
 
 use bgpkit_parser::BgpkitParser;
-use clap::{Subcommand, Parser};
+use clap::{Parser, Subcommand};
 use ipnet::{IpAdd, IpNet};
 use std::collections::HashSet;
 use std::error::Error;
@@ -93,7 +93,7 @@ fn transform_subnets_string(subnets: &[IpNet], ranges: bool) -> Vec<String> {
     let mut result = Vec::new();
     for subnet in subnets {
         if ranges {
-            result.push(prefix_to_range(&subnet));
+            result.push(prefix_to_range(subnet));
         } else {
             result.push(subnet.to_string());
         }
@@ -118,14 +118,17 @@ fn main() -> Result<(), Box<dyn Error>> {
             url,
         } => {
             let origin_asns = origin_asns.iter().copied().collect();
-            let excluded_subnets = transform_subnets_ipnet(&exclude_subnets);
+            let excluded_subnets = transform_subnets_ipnet(exclude_subnets);
 
             let mrt_file_path = if let Some(file) = mrt_file {
                 file.clone()
             } else {
                 let download_url = match (url, rrc) {
                     (Some(u), _) => u.clone(),
-                    (None, rrc) => format!("https://data.ris.ripe.net/rrc{:02}/latest-bview.gz", rrc.unwrap_or(1)),
+                    (None, rrc) => format!(
+                        "https://data.ris.ripe.net/rrc{:02}/latest-bview.gz",
+                        rrc.unwrap_or(1)
+                    ),
                 };
 
                 let mut hasher = DefaultHasher::new();
@@ -138,7 +141,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let verify_cache_interval = Duration::from_secs(*verify_cache_seconds);
 
                 debug!("Using {download_url} for MRT source");
-                download::cached_gzip(&download_url, &output_file_gzip, &output_file_mrt, verify_cache_interval)?
+                download::cached_gzip(
+                    &download_url,
+                    &output_file_gzip,
+                    &output_file_mrt,
+                    verify_cache_interval,
+                )?
             };
 
             let mrt_file = File::open(mrt_file_path)?;
@@ -157,8 +165,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             render_output(&filtered_prefixes, *json, *ip_ranges)?;
         }
         Commands::NetblockContains { needle, haystack } => {
-            let needle_net: IpNet = IpNet::from_str(&needle)?;
-            let haystack_net: IpNet = IpNet::from_str(&haystack)?;
+            let needle_net: IpNet = IpNet::from_str(needle)?;
+            let haystack_net: IpNet = IpNet::from_str(haystack)?;
             if haystack_net.contains(&needle_net.addr()) {
                 println!("{} contains {}", haystack, needle);
             } else {
@@ -187,8 +195,8 @@ fn transform_subnets_ipnet(opts: &Option<Vec<String>>) -> Option<Vec<IpNet>> {
     match opts {
         Some(subnets) if !subnets.is_empty() => {
             let parsed_subnets: Vec<IpNet> = subnets
-                .into_iter()
-                .filter_map(|s| IpNet::from_str(&s).ok())
+                .iter()
+                .filter_map(|s| IpNet::from_str(s).ok())
                 .collect();
 
             if parsed_subnets.is_empty() {

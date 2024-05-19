@@ -1,7 +1,21 @@
 repos:
     -   repo: https://github.com/pre-commit/pre-commit-hooks
-        rev: v2.3.0
+        rev: v4.6.0
         hooks:
             -   id: check-yaml
             -   id: end-of-file-fixer
             -   id: trailing-whitespace
+            -   id: check-toml
+            -   id: check-json
+            -   id: check-case-conflict
+            -   id: check-xml
+            -   id: fix-byte-order-marker
+            -   id: mixed-line-ending
+            -   id: check-merge-conflict
+            -   id: forbid-submodules
+    -   repo: https://github.com/doublify/pre-commit-rust
+        rev: v1.0
+        hooks:
+            -   id: fmt
+            -   id: clippy
+            -   id: cargo-check
