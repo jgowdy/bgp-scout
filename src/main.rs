@@ -31,29 +31,29 @@ enum Commands {
         #[arg(required = true, index = 1)]
         origin_asns: Vec<u32>,
 
-        /// MRT file
+        /// MRT file, conflicts with specifying RIPE RRC or URL
         #[clap(short = 'f', long, conflicts_with = "rrc", conflicts_with = "url")]
         mrt_file: Option<String>,
 
-        /// Output as JSON objects
-        #[clap(long)]
-        json: bool,
-
-        /// Exclude specified subnets
-        #[clap(long, value_delimiter = ',')]
-        exclude_subnets: Option<Vec<String>>,
-
-        /// Output IP addresses as ranges
-        #[clap(long, default_value_t = false)]
-        ip_ranges: bool,
-
-        /// Specify RRC server number (00-25), conflicts with specifying URL or MRT file directly
+        /// Specify RIPE RRC server number (00-25) [default: 01], conflicts with specifying URL or MRT file directly
         #[clap(short = 'r', long, conflicts_with = "url", conflicts_with = "mrt_file", value_parser = clap::value_parser!(u8).range(0..=25))]
         rrc: Option<u8>,
 
         /// Specify an entire URL, conflicts with specifying RRC or MRT file directly
         #[clap(long, conflicts_with = "rrc", conflicts_with = "mrt_file")]
         url: Option<String>,
+
+        /// Exclude specified subnets from results
+        #[clap(long, value_delimiter = ',')]
+        exclude_subnets: Option<Vec<String>>,
+
+        /// Output as JSON objects
+        #[clap(long)]
+        json: bool,
+
+        /// Output IP addresses as ranges
+        #[clap(long, default_value_t = false)]
+        ip_ranges: bool,
 
         /// Verification interval for cache, in seconds
         #[clap(long, default_value_t = 86400)]
