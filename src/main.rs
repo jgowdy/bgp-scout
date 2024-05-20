@@ -28,7 +28,7 @@ struct Cli {
 enum Commands {
     /// Find netblocks based on provided parameters
     FindNetblocks {
-        #[arg(required = true, index = 1)]
+        #[arg(required = true, index = 1, value_delimiter = ',')]
         origin_asns: Vec<u32>,
 
         /// MRT file, conflicts with specifying RIPE RRC or URL
