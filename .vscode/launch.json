@@ -1,0 +1,42 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'bgp-scout'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=bgp-scout",
+                    "--package=bgp-scout"
+                ],
+                "filter": {
+                    "name": "bgp-scout",
+                    "kind": "bin"
+                }
+            },
+            "args": ["find-netblocks", "53429"],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'bgp-scout'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=bgp-scout",
+                    "--package=bgp-scout"
+                ],
+                "filter": {
+                    "name": "bgp-scout",
+                    "kind": "bin"
+                }
+            },
+            "args": ["find-netblocks", "53429"],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
