@@ -3,19 +3,18 @@ mod gzip;
 
 use bgpkit_parser::BgpkitParser;
 use clap::{Parser, Subcommand};
-use ipnet::{IpAdd, IpNet};
+use ipnet::IpNet;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fs;
 use std::fs::File;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, BufReader};
-use std::net::IpAddr;
 use std::str::FromStr;
 use std::time::Duration;
 
 #[allow(unused_imports)]
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -156,13 +155,29 @@ fn main() -> Result<(), Box<dyn Error>> {
                 filters.ipv4_only,
                 filters.ipv6_only,
             )?;
+            let prefixes_len = prefixes.len();
 
             let filtered_prefixes = match excluded_subnets {
-                Some(excluded) => crate::exclude_subnets(&prefixes, excluded),
+                Some(excluded) => crate::exclude_subnets(&prefixes, excluded)?,
                 None => prefixes,
             };
+            trace!("Filtered prefixes after excluded subnets:\n{filtered_prefixes:#?}");
+            debug!(
+                "Prefixes before excluded subnet filtering: {} After: {}",
+                prefixes_len,
+                filtered_prefixes.len()
+            );
 
-            render_output(&filtered_prefixes, *json, *ip_ranges)?;
+            let aggregated_prefixes = IpNet::aggregate(&filtered_prefixes);
+
+            trace!("Aggregated prefixes:\n{aggregated_prefixes:#?}");
+            debug!(
+                "Prefixes before aggregation: {} After: {}",
+                filtered_prefixes.len(),
+                aggregated_prefixes.len()
+            );
+
+            render_output(&aggregated_prefixes, *json, *ip_ranges)?;
         }
         Commands::NetblockContains { needle, haystack } => {
             let needle_net: IpNet = IpNet::from_str(needle)?;
@@ -207,21 +222,6 @@ fn transform_subnets_ipnet(opts: &Option<Vec<String>>) -> Option<Vec<IpNet>> {
         }
         _ => None,
     }
-}
-
-fn exclude_subnets(prefixes: &[IpNet], excluded_subnets: Vec<IpNet>) -> Vec<IpNet> {
-    let mut final_prefixes = Vec::new();
-    debug!("Applying excluded subnets {:?}", excluded_subnets);
-
-    for exclude_net in excluded_subnets {
-        debug!("Searching prefixes for excluded subnet {}", exclude_net);
-        final_prefixes.extend(
-            prefixes
-                .iter()
-                .flat_map(|prefix| exclude_subnet(prefix, exclude_net)),
-        );
-    }
-    final_prefixes
 }
 
 fn scan_prefixes(
@@ -279,7 +279,7 @@ fn scan_prefixes(
                     .any(|asn| origin_asns.contains(&asn.to_u32()))
                     && prefixes.insert(elem.prefix.prefix)
                 {
-                    debug!("Found new matching prefix {}", elem.prefix.prefix);
+                    trace!("Found new matching prefix {}", elem.prefix.prefix);
                 }
             }
         }
@@ -298,48 +298,46 @@ fn scan_prefixes(
     Ok(prefixes.iter().copied().collect())
 }
 
-fn exclude_subnet(net: &IpNet, excluded_net: IpNet) -> Vec<IpNet> {
+fn exclude_subnets(
+    prefixes: &[IpNet],
+    excluded_subnets: Vec<IpNet>,
+) -> Result<Vec<IpNet>, Box<dyn Error>> {
     let mut result = Vec::new();
+    let excluded_set: HashSet<IpNet> = excluded_subnets.into_iter().collect();
 
-    // If excluded_net is not within net, return the whole net
-    if !net.contains(&excluded_net.network()) || !net.contains(&excluded_net.broadcast()) {
-        result.push(*net);
-        return result;
+    'outer: for prefix in prefixes {
+        for excluded in &excluded_set {
+            if excluded.contains(prefix) {
+                debug!(
+                    "Prefix {} is entirely contained by excluded subnet {}, skipping it.",
+                    prefix, excluded
+                );
+                continue 'outer;
+            } else if prefix.contains(excluded) {
+                debug!(
+                    "Prefix {} contains excluded subnet {}, splitting it.",
+                    prefix, excluded
+                );
+                let new_prefix_len = excluded.prefix_len();
+                for subnet in prefix.subnets(new_prefix_len)? {
+                    if subnet == *excluded {
+                        debug!(
+                            "Excluding subnet {} from split of prefix {}.",
+                            subnet, prefix
+                        );
+                    } else {
+                        debug!("Adding subnet {} from split of prefix {}.", subnet, prefix);
+                        result.push(subnet);
+                    }
+                }
+                continue 'outer;
+            }
+        }
+        trace!("Adding unaffected prefix: {}", prefix);
+        result.push(*prefix);
     }
 
-    // Check if net and excluded_net are the same
-    if *net == excluded_net {
-        return result; // Empty result as the entire net is excluded
-    }
-
-    debug!("Excluded subnet {} is a subset of {}", excluded_net, net);
-
-    // If net contains excluded_net, we need to split net into subnets
-    // Generate subnets by splitting the net
-    let left_subnet =
-        IpNet::new(net.network(), net.prefix_len() + 1).expect("Failed to split left_subnet");
-    let next_ip = ipaddr_saturating_add(left_subnet.broadcast());
-    let right_subnet =
-        IpNet::new(next_ip, left_subnet.prefix_len() + 1).expect("Failed to split right_subnet");
-
-    if left_subnet.contains(&excluded_net.network()) {
-        // Exclude from the left subnet
-        result.extend(exclude_subnet(&left_subnet, excluded_net));
-        result.push(right_subnet); // Add the right subnet as it is
-    } else if right_subnet.contains(&excluded_net.network()) {
-        // Exclude from the right subnet
-        result.push(left_subnet); // Add the left subnet as it is
-        result.extend(exclude_subnet(&right_subnet, excluded_net));
-    }
-
-    result
-}
-
-fn ipaddr_saturating_add(ipaddr: IpAddr) -> IpAddr {
-    match ipaddr {
-        IpAddr::V4(ip) => IpAddr::V4(ip.saturating_add(1)),
-        IpAddr::V6(ip) => IpAddr::V6(ip.saturating_add(1)),
-    }
+    Ok(result)
 }
 
 #[cfg(feature = "diagnostic_logging")]
